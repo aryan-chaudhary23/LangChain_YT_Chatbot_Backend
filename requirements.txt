@@ -10,4 +10,3 @@ huggingface-hub
 python-dotenv
 requests
 youtube-transcript-api
-sentence-transformers
