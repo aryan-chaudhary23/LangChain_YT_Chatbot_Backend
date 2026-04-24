@@ -4,12 +4,13 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from urllib.parse import urlparse, parse_qs
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFaceEndpoint, ChatHuggingFace
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace, HuggingFaceEndpointEmbeddings
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
+import time
 
 load_dotenv()
 
@@ -20,9 +21,10 @@ splitter = None
 chunks = None
 vector_store = None
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-small-en-v1.5",
-    encode_kwargs={"normalize_embeddings": True}  # important
+embeddings = HuggingFaceEndpointEmbeddings(
+    model="BAAI/bge-small-en-v1.5",                  
+    huggingfacehub_api_token=os.getenv("HF_TOKEN"),    
+    task="feature-extraction"
 )
 llm_backend = HuggingFaceEndpoint(
         repo_id="Qwen/Qwen2.5-7B-Instruct",
@@ -79,7 +81,19 @@ def final_work(url,question):
             print("No captions available for this video.")
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = splitter.create_documents([transcript])
-        vector_store = FAISS.from_documents(chunks, embeddings)
+        # 1. Initialize FAISS with just the first chunk
+        vector_store = FAISS.from_documents([chunks[0]], embeddings)
+
+        # 2. Feed the remaining chunks in batches of 10
+        batch_size = 10
+        for i in range(1, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            
+            # Send the small batch to Hugging Face API
+            vector_store.add_documents(batch)
+            
+            # Pause for 1 second to respect free-tier rate limits
+            time.sleep(1)
     global retriever, parallel_chain, parser, main_chain
     retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
