@@ -48,15 +48,21 @@ prompt = PromptTemplate(
 
 vector_store_cache = {}
 
+from urllib.parse import urlparse, parse_qs
+
 def extract_video_id(url):
     parsed_url = urlparse(url)
+    hostname = parsed_url.hostname or ""
 
-    if parsed_url.hostname in ["www.youtube.com", "youtube.com"]:
-        return parse_qs(parsed_url.query).get("v", [None])[0]
-    if parsed_url.hostname == "youtu.be":
+    if "youtube.com" in hostname:
+        if parsed_url.path == "/watch":
+            return parse_qs(parsed_url.query).get("v", [None])[0]
+
+        if parsed_url.path.startswith("/embed/") or parsed_url.path.startswith("/shorts/"):
+            return parsed_url.path.split("/")[2]
+
+    if "youtu.be" in hostname:
         return parsed_url.path[1:]
-    if "embed" in parsed_url.path:
-        return parsed_url.path.split("/")[-1]
 
     return None
 
