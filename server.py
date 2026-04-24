@@ -11,6 +11,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import time
+import os
 
 load_dotenv()
 
@@ -28,6 +29,7 @@ embeddings = HuggingFaceEndpointEmbeddings(
 )
 llm_backend = HuggingFaceEndpoint(
         repo_id="Qwen/Qwen2.5-7B-Instruct",
+        huggingfacehub_api_token=os.getenv("HF_TOKEN"),
         temperature=0.2,
         max_new_tokens=1024,
         task="conversational"   # IMPORTANT
@@ -125,7 +127,6 @@ def ask():
 def health():
     return jsonify({"status": "ok"})
 
-import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
