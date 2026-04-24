@@ -1,11 +1,12 @@
 import os
 import time
+import requests # NEW: Added the requests library for RapidAPI
 from urllib.parse import urlparse, parse_qs
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+# REMOVED: youtube_transcript_api imports
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
@@ -29,7 +30,7 @@ llm_backend = HuggingFaceEndpoint(
     huggingfacehub_api_token=os.getenv("HF_TOKEN"),
     temperature=0.2,
     max_new_tokens=1024,
-    task="conversational"   # IMPORTANT
+    task="conversational"   
 )
 llm = ChatHuggingFace(llm=llm_backend)
 
@@ -45,21 +46,15 @@ prompt = PromptTemplate(
     input_variables = ['context', 'question']
 )
 
-# FIXED: Changed from set() to dictionary {} to prevent the UnboundLocalError crash
 vector_store_cache = {}
 
 def extract_video_id(url):
     parsed_url = urlparse(url)
 
-    # Case 1: https://www.youtube.com/watch?v=VIDEO_ID
     if parsed_url.hostname in ["www.youtube.com", "youtube.com"]:
         return parse_qs(parsed_url.query).get("v", [None])[0]
-
-    # Case 2: https://youtu.be/VIDEO_ID
     if parsed_url.hostname == "youtu.be":
         return parsed_url.path[1:]
-
-    # Case 3: https://www.youtube.com/embed/VIDEO_ID
     if "embed" in parsed_url.path:
         return parsed_url.path.split("/")[-1]
 
@@ -75,15 +70,37 @@ def final_work(url, question):
     if not video_id:
         return "Invalid YouTube URL."
 
-    # FIXED: Dictionary Cache Logic
     if video_id not in vector_store_cache:
+        # --- NEW RAPIDAPI FETCH LOGIC ---
         try:
-            ytt_api = YouTubeTranscriptApi()
-            transcript_list = ytt_api.fetch(video_id, languages=["en"])
-            transcript = " ".join(chunk.text for chunk in transcript_list)
+            api_url = "https://youtube-transcript3.p.rapidapi.com/api/transcript"
+            querystring = {"videoId": video_id}
+            headers = {
+                "x-rapidapi-key": os.getenv("RAPIDAPI_KEY"),
+                "x-rapidapi-host": "youtube-transcript3.p.rapidapi.com"
+            }
 
-        except TranscriptsDisabled:
-            return "No captions available for this video."
+            response = requests.get(api_url, headers=headers, params=querystring)
+            
+            if response.status_code != 200:
+                return f"API Error: Could not fetch transcript. Status {response.status_code}. Make sure your RapidAPI key is valid."
+                
+            data = response.json()
+
+            # Safely extract text from the API's JSON response
+            if isinstance(data, list):
+                transcript = " ".join([item.get('text', '') for item in data if 'text' in item])
+            elif isinstance(data, dict) and 'transcript' in data:
+                transcript = " ".join([item.get('text', '') for item in data['transcript'] if 'text' in item])
+            else:
+                transcript = str(data)
+
+            if not transcript or len(transcript) < 10:
+                return "No captions available for this video."
+
+        except Exception as e:
+             return f"RapidAPI Connection Error: {str(e)}"
+        # --- END RAPIDAPI LOGIC ---
             
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = splitter.create_documents([transcript])
@@ -91,27 +108,18 @@ def final_work(url, question):
         if not chunks:
             return "Transcript is empty."
 
-        # 1. Initialize FAISS with just the first chunk
         vector_store = FAISS.from_documents([chunks[0]], embeddings)
 
-        # 2. Feed the remaining chunks in batches of 10
         batch_size = 10
         for i in range(1, len(chunks), batch_size):
             batch = chunks[i : i + batch_size]
-            
-            # Send the small batch to Hugging Face API
             vector_store.add_documents(batch)
-            
-            # Pause for 1 second to respect free-tier rate limits
             time.sleep(1)
             
-        # IMPORTANT: Save the database into the dictionary so it remembers this specific video
         vector_store_cache[video_id] = vector_store
 
-    # Grab the built database from the dictionary
     vector_store = vector_store_cache[video_id]
 
-    # FIXED: Removed the 'global' variables so multiple users don't overwrite each other
     retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
     parallel_chain = RunnableParallel({
@@ -126,7 +134,6 @@ def final_work(url, question):
 
 @app.route("/api/ask", methods=["POST"])
 def ask():
-    # Added the try/except block so if anything goes wrong, React gets a clean error message
     try:
         data = request.get_json(force=True)
         url = (data.get("url") or "").strip()
@@ -148,7 +155,6 @@ def ask():
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
